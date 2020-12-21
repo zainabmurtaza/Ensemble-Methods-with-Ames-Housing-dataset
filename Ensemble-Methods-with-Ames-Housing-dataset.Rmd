@@ -1,0 +1,420 @@
+
+---
+title: "Ensemble Methods on the Ames Housing dataset"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+install_tensorflow()
+install.packages("tensorflow")
+library(tensorflow)
+install_tensorflow()
+
+library(tensorflow)
+tf$constant("Hellow Tensorflow")
+
+# Predicting house prices using Ensemble methods
+
+
+**Reading in the dataset**
+
+```{r}
+dataHouse <- read.csv("housing.csv", colClasses = c(MSSubClass = 'factor',  MoSold ='factor'))
+dataHouse$Id <- NULL
+```
+
+## Section 1 - Data Cleaning
+
+**Overall structure and summary statistics of variables.**
+
+```{r}
+summary(dataHouse)
+```
+
+There are 45 categorical features, and 35 numerical features. Of which, 19 features have missing values.
+
+```{r}
+colMeans(is.na(dataHouse))
+```
+
+Variables with Missing values %:
+LotFrontage(17.7%), Alley(93.8%), MasVnrType (0.6%), MasVnrArea (0.6%), BsmtQual (2.5%), BsmtCond (2.5%), BsmtExposure (2.6%), BsmtFinType1 (2.5%), BsmtFinType2 (2.6), Electrical (0.06%), FireplaceQu (47.3%), GarageType (5.5%), GarageYrBlt (5.5%), GarageFinish (5.5%), GarageQual (5.5%), GarageCond (5.6%), PoolQC (99.5%), Fence (80.8%), MiscFeature (96.3%).
+
+```{r}
+which(colMeans(is.na(dataHouse)) >= 0.30)
+```
+
+```{r}
+dataHouse$Alley <- NULL
+dataHouse$FireplaceQu <- NULL
+dataHouse$PoolQC <- NULL
+dataHouse$Fence <- NULL
+dataHouse$MiscFeature <- NULL
+```
+
+```{r}
+NROW(dataHouse[!complete.cases(dataHouse),])/NROW(dataHouse) * 100
+```
+
+Around 25% rows have one or more missing values now.
+
+*Imputing missing values using Random Forests*
+
+```{r}
+#install.packages("missForest")
+library(missForest)
+
+set.seed(1)
+
+tempVar <- dataHouse$SalePrice
+dataHouse$SalePrice <- NULL
+
+data_Imp <- missForest(dataHouse)
+
+```
+
+```{r}
+
+data_Imp$OOBerror
+```
+
+```{r}
+
+dataHouse <- data_Imp$ximp
+dataHouse$SalePrice <- tempVar
+
+```
+
+## Section 2 - Data Exploration
+
+```{r}
+hist(dataHouse$SalePrice)
+```
+
+Eyeballing the distribution, we can see that the distribution is postively skewed, with most of the houses being in the lower price range.
+
+```{r}
+# Log transformation of target variable
+
+dataHouse$SalePrice <- log(dataHouse$SalePrice)
+
+```
+
+```{r}
+plot(SalePrice ~ ., data= dataHouse)
+```
+
+Visually observing the plots, the following variables seems like they might be correlated:
+OverallQual, TotalBsmtSF, X1stFlrSF, GrLivArea, TotRmsAbvGrd.
+
+## Section 3 - Creating Predictive Models
+
+```{r}
+library(caret)
+```
+
+```{r}
+# Train test split
+train.index <- createDataPartition(dataHouse$SalePrice, p = 0.8, list = FALSE)
+data_train <- dataHouse[train.index, ]
+data_test <- dataHouse[-train.index, ]
+
+```
+
+*Lasso Linear Regression Model*
+
+```{r}
+
+set.seed(1)
+
+lasso <- train(
+  SalePrice ~., data = data_train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 1, lambda = 10^seq(-3, 3, length = 100)))
+
+
+```
+
+Best tuned coefficients:
+
+```{r}
+coeffs <- as.matrix(coef(lasso$finalModel, lasso$bestTune$lambda))
+coeffs
+```
+
+```{r}
+coeffs[coeffs[,1] ==0, ]
+```
+
+Some variables lambda values were reduced to zero, which means they weren't used in the model for prediction. The lasso models automatically carry out variable selection. Variables shown above were the ones which were reduced to 0.
+
+```{r}
+predictions <- predict(lasso,data_test)
+RMSE(predictions, data_test$SalePrice)
+
+```
+
+*Ridge Linear Regression Model*
+
+```{r}
+set.seed(1)
+
+ridge <- train(
+  SalePrice ~., data = data_train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 0, lambda = 10^seq(-3, 3, length = 100)))
+
+
+```
+
+```{r}
+predictions <- predict(ridge,data_test)
+RMSE(predictions, data_test$SalePrice)
+
+```
+
+
+*Elastic Net Linear Regression Model*
+
+```{r}
+set.seed(1)
+
+enet <- train(
+  SalePrice ~., data = data_train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = seq(0,1, length=10), lambda = 10^seq(-3, 3, length = 100)))
+
+
+```
+
+```{r}
+predictions <- predict(enet,data_test)
+RMSE(predictions, data_test$SalePrice)
+
+```
+
+**Random Forest Models**
+
+```{r}
+set.seed(1)
+
+m_rf <- train(SalePrice ~ ., data = data_train, method = "rf", importance = TRUE,
+              trControl = trainControl(method = "cv", number = 10), tuneGrid = expand.grid(mtry = c(2, 4, 8, 16)))
+
+```
+
+```{r}
+predictions <- predict(m_rf,data_test)
+RMSE(predictions, data_test$SalePrice)
+```
+
+
+```{r}
+varImp(m_rf)
+```
+
+```{r}
+
+listRFImp <- varImp(m_rf)$importance
+listRFImp$Var <- row.names(listRFImp)
+row.names(listRFImp) <- NULL
+listRFImp <- listRFImp[order(listRFImp$Overall, decreasing = TRUE),][1:20,2]
+
+
+#as.data.frame(coeffs[coeffs[,1] !=0,])
+```
+
+```{r}
+coeffsDF <- as.data.frame(coeffs)
+coeffsDF$Var <- row.names(coeffsDF)
+row.names(coeffsDF) <- NULL
+
+coeffsDF <- coeffsDF[coeffsDF$Var %in% listRFImp,]
+coeffsDF
+```
+
+By examining the filtered DF, we can see what the Lasso Regression model determined for the top 20 variables that the Random Forest model deemed important. Of the 20 that were identified important by RF, 5 were totally ignored by Lasso, and the one that most important in RF 'GrLivArea', was one of the important in Lasso but not the most important.
+
+**Gradient Boosted Trees Model**
+
+```{r}
+set.seed(1)
+
+gbm <- train(
+  SalePrice ~., data = data_train, method = "gbm",
+  trControl = trainControl("cv", number = 10), preProc = "nzv")
+
+```
+
+```{r}
+predictions <- predict(gbm,data_test)
+RMSE(predictions, data_test$SalePrice)
+```
+
+**Comparison of Models**
+
+```{r}
+compare=resamples(list(L=lasso, R=ridge, E=enet, RF = m_rf, G = gbm))
+```
+
+```{r}
+summary(compare)
+```
+
+Of the 5 models ran over the same dataset, the Gradient Boosted Trees model performed well producing the minimum RMSE compared to other models. The Ridge regression model performed the worst of them all.
+
+**Neural Networks with Dropout**
+
+```{r}
+# Convert Year columns to numeric
+
+cols <- c("YearBuilt", "YearRemodAdd", "GarageYrBlt", "YrSold")
+data_train[cols] <- sapply(data_train[cols],as.numeric)
+data_test[cols] <- sapply(data_test[cols],as.numeric)
+
+```
+
+```{r}
+# Train validation split
+
+train.index <- createDataPartition(data_train$SalePrice, p = 0.9, list = FALSE)
+data_nn_train <- data_train[train.index, ]
+data_nn_validation <- data_train[-train.index, ]
+
+# Test set
+data_nn_test <- data_test
+
+# Separating and log transforming the target variable
+data_nn_train_y <- data_nn_train$SalePrice
+data_nn_train$SalePrice <- NULL
+
+data_nn_test_y <- data_nn_test$SalePrice
+data_nn_test$SalePrice <- NULL
+
+data_nn_validation_y <- data_nn_validation$SalePrice
+data_nn_validation$SalePrice <- NULL
+
+```
+
+```{r}
+# Scaling the data
+
+ind <- sapply(data_nn_train, is.numeric) # Only for numeric
+
+col_means_train <- lapply(data_nn_train[ind], mean) 
+col_stddevs_train <- lapply(data_nn_train[ind], sd)
+
+data_nn_train[ind] <- lapply(data_nn_train[ind], scale)
+
+```
+
+
+```{r}
+# Scaling validation and testing data using mean and sd
+
+data_nn_validation[ind] <- scale(data_nn_validation[ind], center = col_means_train, scale = col_stddevs_train)
+data_nn_test[ind] <- scale(data_nn_test[ind], center = col_means_train, scale = col_stddevs_train)
+
+```
+
+```{r}
+# One Hot Encoding
+
+library("mltools")
+library("data.table")
+
+data_nn_train = as.data.frame(one_hot(as.data.table(data_nn_train)))
+data_nn_validation = as.data.frame(one_hot(as.data.table(data_nn_validation)))
+data_nn_test = as.data.frame(one_hot(as.data.table(data_nn_test)))
+
+```
+
+
+```{r results='hide', warning=FALSE, message=FALSE}
+
+library("tfruns")
+
+runs <- tuning_run("house_train.R", 
+                  flags = list(
+                  nodes_hlayer1 = c(600, 500, 400),
+                  nodes_hlayer2 = c(500, 250, 100),
+                  learning_rate = c(0.01, 0.05, 0.001, 0.0001),                 
+                  batch_size=c(10,20,50,75),
+                  epochs=c(30,50,100),
+                  activation=c("relu","sigmoid","tanh"),
+                  dropout1=c(0.3, 0.4, 0.5),
+                  dropout2=c(0.2, 0.3, 0.4)),
+                  sample = 0.01
+)
+
+
+```
+
+
+
+```{r}
+#runs
+#view_run(runs$run_dir[9])
+
+runsHouse <- runs[order(runs$metric_val_loss, decreasing = FALSE),][1,]
+
+```
+
+Best performing with params:
+nodes_hlayer1 = `r runsHouse$flag_nodes_hlayer1`,
+nodes_hlayer2 = `r runsHouse$flag_nodes_hlayer2`,
+batch_size = `r runsHouse$flag_batch_size`,
+activation = `r runsHouse$flag_activation`,
+learning_rate = `r runsHouse$flag_learning_rate`,
+epochs = `r runsHouse$flag_epochs`
+dropout1 = `r runsHouse$flag_dropout1`,
+dropout2 = `r runsHouse$flag_dropout2`.
+
+The model doesn not overfit since the difference between error is little with the training error = `r runsHouse$metric_loss` and validation error = `r runsHouse$metric_val_loss`.
+
+**Model Testing**
+```{r}
+# Combine validation and training data
+data_nn_train_all <- rbind(data_nn_train, data_nn_validation)
+data_nn_train_all_y <- c(data_nn_train_y, data_nn_validation_y)
+```
+
+```{r}
+
+set.seed(1)
+
+model <- keras_model_sequential()
+model %>%
+  layer_dense(units = 900, activation = runsHouse$flag_activation, input_shape = dim(data_nn_train)[2]) %>%
+  layer_dense(units = runsHouse$flag_nodes_hlayer1, activation = runsHouse$flag_activation) %>%
+  layer_dropout(runsHouse$flag_dropout1) %>%
+  layer_dense(units = runsHouse$flag_nodes_hlayer2, activation = runsHouse$flag_activation) %>%
+  layer_dropout(runsHouse$flag_dropout2) %>%
+  layer_dense(units = 1)
+
+model %>%
+  compile(optimizer = optimizer_adam(lr = runsHouse$flag_learning_rate), loss = 'mse')
+
+set.seed(123)
+
+model %>%
+  fit(as.matrix(data_nn_train_all), as.matrix(data_nn_train_all_y), batch_size = runsHouse$flag_batch_size, epochs = runsHouse$flag_epochs,
+      validation_data = list(as.matrix(data_nn_test), as.matrix(data_nn_test_y)))
+
+```
+
+
+```{r}
+predictions <- model %>% predict(as.matrix(data_nn_test))
+
+cat('RMSE:', RMSE(predictions, as.matrix(data_nn_test_y)))
+
+```
+
+
+Compared with the Gradient Boosted Trees model which had the RMSE = 0.136, this neural network was not able outperform the GBM by having a slightly worse RMSE.
+
+
+
+
